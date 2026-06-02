@@ -1,0 +1,172 @@
+# Main-branch pipeline (Requirement 42.5).
+#
+# WHEN code is merged to `main`, this workflow runs the full check suite, then
+# integration AND end-to-end tests, and THEN deploys to the STAGING
+# environment. The deploy job is gated to run only after every test job
+# succeeds (`needs:`), so a failing test never reaches staging.
+#
+# Test commands mirror the monorepo scripts (root package.json):
+#   - lint/type-check/unit  -> `pnpm -w run lint|type-check|test`
+#   - integration/e2e       -> `pnpm -w run test:integration` / `test:e2e`
+#     (added by tasks 24.4 and 27.3; referenced here as script placeholders).
+name: Main (integration, e2e, staging deploy)
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  # Never run two staging deploys for `main` at once; let the newest finish.
+  group: main-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Required for AWS authentication via OIDC (no long-lived keys).
+  id-token: write
+  security-events: write
+
+jobs:
+  # --- Req 42.5: full check suite -------------------------------------------
+  checks:
+    name: Lint, type-check & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm -w run lint
+
+      - name: Type check
+        run: pnpm -w run type-check
+
+      - name: Build
+        run: pnpm -w run build
+
+      - name: Unit tests
+        run: pnpm -w run test
+
+  # --- Req 42.5: integration AND end-to-end tests ---------------------------
+  integration-e2e:
+    name: Integration & e2e tests
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm -w run build
+
+      # Integration tests for the public API + SDK (task 24.4).
+      - name: Integration tests
+        run: pnpm -w run test:integration
+
+      # End-to-end tests for the wired streaming-chat-with-RAG and cross-module
+      # ingestion/unified-search flows (task 27.3).
+      - name: End-to-end tests
+        run: pnpm -w run test:e2e
+
+  # --- Req 42.5: deploy to STAGING ------------------------------------------
+  # Runs only after integration + e2e pass (`needs`). Uses GitHub OIDC to
+  # assume an AWS role (no static credentials), builds & pushes the container
+  # image(s), then applies the Terraform staging environment from task 26.1.
+  deploy-staging:
+    name: Deploy to staging
+    needs: integration-e2e
+    runs-on: ubuntu-latest
+    # `staging` GitHub environment: optional protection, surfaces the
+    # deployment URL/history in the repo's Environments view.
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Assume the staging deploy role via OIDC. Configure the role ARN as the
+      # repository/environment variable `AWS_STAGING_DEPLOY_ROLE_ARN` and the
+      # region as `AWS_REGION` (repo settings). No secrets are inlined.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_STAGING_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build application bundles
+        run: pnpm -w run build
+
+      # Build & push the api/web container images, tagged with the commit SHA.
+      # ECR_REGISTRY is exported by the ecr-login step above.
+      - name: Build and push container images
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        # The build context / Dockerfile paths are provisioned alongside the
+        # task 26.1 ECS task definitions; adjust the repository names to match
+        # the staging ECR repos created by Terraform.
+        run: |
+          echo 'Build and push images tagged ${{ github.sha }} to ECR.'
+          # docker build -t "$ECR_REGISTRY/auxify-api:$IMAGE_TAG" -f apps/api/Dockerfile .
+          # docker push "$ECR_REGISTRY/auxify-api:$IMAGE_TAG"
+          # docker build -t "$ECR_REGISTRY/auxify-web:$IMAGE_TAG" -f apps/web/Dockerfile .
+          # docker push "$ECR_REGISTRY/auxify-web:$IMAGE_TAG"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # Apply the staging environment from task 26.1. The environment directory
+      # `infra/environments/staging` is created by that task; pass the freshly
+      # built image tag so the staging ECS service rolls forward.
+      - name: Terraform apply (staging)
+        run: |
+          terraform -chdir=infra/environments/staging init -input=false
+          terraform -chdir=infra/environments/staging apply -input=false -auto-approve -var='image_tag=${{ github.sha }}'

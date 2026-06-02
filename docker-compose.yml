@@ -1,0 +1,86 @@
+# Local development parity stack (Requirement 42.2: the same architecture runs
+# locally and in the cloud). Provides the three data-layer backends the
+# platform depends on:
+#   - PostgreSQL 16 + pgvector (primary DB + vector store, Req 44.1/44.2/44.3)
+#   - Redis (cache / queue / pub-sub / sessions, Req 44.4)
+#   - MinIO (S3-compatible object store, Req 44.5)
+#
+# Start with:  pnpm docker:up   (docker compose up -d)
+# Stop with:   pnpm docker:down (docker compose down)
+
+name: auxify-local
+
+services:
+  postgres:
+    # pgvector image bundles PostgreSQL 16 with the pgvector extension.
+    image: pgvector/pgvector:pg16
+    container_name: auxify-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-auxify}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-auxify_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-auxify}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/local/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-auxify} -d ${POSTGRES_DB:-auxify}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: auxify-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: auxify-minio
+    restart: unless-stopped
+    command: ['server', '/data', '--console-address', ':9001']
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-auxify}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-auxify_dev_password}
+    ports:
+      - '${MINIO_PORT:-9000}:9000'
+      - '${MINIO_CONSOLE_PORT:-9001}:9001'
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # One-shot job that creates the default object-store bucket on startup.
+  minio-setup:
+    image: minio/mc:latest
+    container_name: auxify-minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set local http://minio:9000 "${MINIO_ROOT_USER:-auxify}" "${MINIO_ROOT_PASSWORD:-auxify_dev_password}" &&
+        mc mb --ignore-existing local/${MINIO_BUCKET:-auxify-local} &&
+        echo "MinIO bucket ready: ${MINIO_BUCKET:-auxify-local}"
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

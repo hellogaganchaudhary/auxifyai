@@ -1,0 +1,174 @@
+# Feature-branch + pull-request pipeline (Requirement 42.4).
+#
+# WHEN code is pushed to a FEATURE BRANCH (any branch that is not `main`) or a
+# pull request is opened against `main`, this workflow runs linting, type
+# checking, unit tests, and security scanning.
+#
+# It mirrors the monorepo's own scripts (see root package.json):
+#   - `pnpm -w run lint`        -> `turbo run lint`
+#   - `pnpm -w run type-check`  -> `turbo run type-check`
+#   - `pnpm -w run test`        -> `vitest run`
+# pnpm@9.15.9 is the package manager and Node 22 is the engine (root
+# package.json `packageManager` / `engines`).
+name: CI (feature branches & PRs)
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # CodeQL needs to write analysis results to the Security tab.
+  security-events: write
+
+jobs:
+  # --- Req 42.4: linting -----------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # Match the root package.json `packageManager` field.
+          version: 9.15.9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint (turbo run lint)
+        run: pnpm -w run lint
+
+  # --- Req 42.4: type checking ----------------------------------------------
+  type-check:
+    name: Type check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check (turbo run type-check)
+        run: pnpm -w run type-check
+
+  # --- Req 42.4: unit tests --------------------------------------------------
+  unit-test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Workspaces build their dependencies first (turbo `^build`); the root
+      # `test` script runs `vitest run` across the monorepo.
+      - name: Build
+        run: pnpm -w run build
+
+      - name: Unit tests
+        run: pnpm -w run test
+
+  # --- Req 42.4: security scanning ------------------------------------------
+  # Three complementary scans: a dependency/audit scan, static analysis
+  # (CodeQL), and secret scanning (Gitleaks).
+  security-scan-dependencies:
+    name: Security scan (dependency audit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Fail the build on a high/critical advisory in the dependency tree.
+      - name: pnpm audit
+        run: pnpm audit --audit-level high
+
+  security-scan-codeql:
+    name: Security scan (CodeQL static analysis)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:javascript-typescript'
+
+  security-scan-secrets:
+    name: Security scan (secret detection)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Gitleaks scans the full history of the push/PR range.
+          fetch-depth: 0
+
+      - name: Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          # GITHUB_TOKEN lets the action annotate the PR; no extra secret needed.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

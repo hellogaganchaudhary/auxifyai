@@ -1,0 +1,37 @@
+{
+  "name": "auxify-ai-platform",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Auxify AI Platform monorepo (pnpm workspaces + Turborepo)",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "type-check": "turbo run type-check",
+    "lint": "turbo run lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "dev": "turbo run dev",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.18.0",
+    "@types/node": "22.10.5",
+    "@vitest/coverage-v8": "2.1.8",
+    "eslint": "9.18.0",
+    "eslint-config-prettier": "9.1.0",
+    "fast-check": "3.23.2",
+    "globals": "15.14.0",
+    "prettier": "3.4.2",
+    "turbo": "2.3.4",
+    "typescript": "5.7.3",
+    "typescript-eslint": "8.20.0",
+    "vitest": "2.1.8"
+  }
+}

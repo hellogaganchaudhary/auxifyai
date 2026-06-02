@@ -1,0 +1,163 @@
+# Production release pipeline (Requirements 42.6, 42.7).
+#
+# Triggered MANUALLY (`workflow_dispatch`) or by pushing a semantic version tag
+# (`v*.*.*`). It:
+#   1. Requires MANUAL APPROVAL (Req 42.6) via the `production` GitHub
+#      environment protection rule (required reviewers).
+#   2. Performs a BLUE-GREEN deployment (Req 42.6) using ECS + CodeDeploy
+#      (deployment controller CODE_DEPLOY): a green task set is brought up, then
+#      traffic is shifted from blue to green.
+#   3. Runs a POST-DEPLOY PRODUCTION HEALTH CHECK and, on failure,
+#      AUTOMATICALLY ROLLS BACK to the previous release (Req 42.7).
+#
+# IMPORTANT repo configuration (see .github/workflows/README.md):
+#   - The `production` environment MUST have a required-reviewers protection
+#     rule configured in repo Settings > Environments. That rule is what makes
+#     the deploy job PAUSE for manual approval (Req 42.6). It cannot be declared
+#     in YAML; only the `environment:` reference below can.
+name: Production (blue-green release)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Container image tag to promote to production (defaults to the commit SHA).'
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*.*.*'
+
+concurrency:
+  # Only one production release at a time.
+  group: production-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # --- Req 42.6: MANUAL APPROVAL + BLUE-GREEN deployment --------------------
+  deploy-production:
+    name: Deploy to production (blue-green)
+    runs-on: ubuntu-latest
+    # Declaring `environment: production` makes this job WAIT for approval when
+    # the environment has a required-reviewers protection rule (Req 42.6).
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    # Resolve the image tag once: workflow_dispatch input, else the commit SHA.
+    env:
+      IMAGE_TAG: ${{ github.event.inputs.image_tag || github.sha }}
+    outputs:
+      codedeploy_deployment_id: ${{ steps.codedeploy.outputs.deployment_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Assume the production deploy role via OIDC. Configure the role ARN as
+      # the `production` environment variable `AWS_PRODUCTION_DEPLOY_ROLE_ARN`
+      # and the region as `AWS_REGION`. No secrets are inlined.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PRODUCTION_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Render the ECS task definition with the promoted image tag. The base
+      # task definition is produced by the Terraform production environment
+      # (task 26.1). `container-name` must match the container in that
+      # definition.
+      - name: Render production task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: infra/environments/production/taskdef.json
+          container-name: ${{ vars.PRODUCTION_CONTAINER_NAME }}
+          image: '${{ steps.login-ecr.outputs.registry }}/auxify-api:${{ env.IMAGE_TAG }}'
+
+      # BLUE-GREEN deployment (Req 42.6): the ECS service in production uses the
+      # CODE_DEPLOY deployment controller (provisioned by task 26.1). This
+      # action drives a CodeDeploy blue-green deployment — it stands up a GREEN
+      # task set and shifts the ALB listener from blue to green.
+      #
+      # `appspec.json` and the CodeDeploy app/deployment-group names come from
+      # the Terraform production environment. The CodeDeploy deployment group is
+      # configured to AUTO-ROLLBACK on a CloudWatch alarm (see Req 42.7 note in
+      # the README), which complements the explicit rollback job below.
+      - name: Deploy to ECS via CodeDeploy (blue-green)
+        id: codedeploy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ vars.PRODUCTION_ECS_SERVICE }}
+          cluster: ${{ vars.PRODUCTION_ECS_CLUSTER }}
+          wait-for-service-stability: true
+          codedeploy-appspec: infra/environments/production/appspec.json
+          codedeploy-application: ${{ vars.PRODUCTION_CODEDEPLOY_APP }}
+          codedeploy-deployment-group: ${{ vars.PRODUCTION_CODEDEPLOY_GROUP }}
+
+  # --- Req 42.7: POST-DEPLOY HEALTH CHECK -----------------------------------
+  # Hits the production health endpoint (the api exposes `GET /health/:service`
+  # and an aggregate `GET /health`) with retries. A non-2xx response, or
+  # exhausting retries, fails this job and triggers the rollback job below.
+  health-check:
+    name: Production health check
+    needs: deploy-production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe production health endpoint (with retries)
+        env:
+          # Full URL of the aggregate health endpoint, e.g.
+          # https://api.example.com/health  (set as a repo/environment var).
+          HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL }}
+        # Single-quoted script: avoids bash history-expansion on any '!'.
+        run: |
+          set -euo pipefail
+          attempts=10
+          delay=15
+          n=1
+          while [ "$n" -le "$attempts" ]; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$HEALTH_URL" || echo 000)
+            echo "Attempt $n/$attempts -> HTTP $code"
+            if [ "$code" = '200' ]; then
+              echo 'Production health check passed.'
+              exit 0
+            fi
+            n=$((n + 1))
+            sleep "$delay"
+          done
+          echo 'Production health check FAILED after all retries.'
+          exit 1
+
+  # --- Req 42.7: AUTOMATIC ROLLBACK -----------------------------------------
+  # Runs ONLY if the health check failed (`if: failure()` + `needs`). Stops the
+  # in-flight CodeDeploy blue-green deployment, which rolls traffic back to the
+  # previous (blue) task set, restoring the previous release.
+  rollback:
+    name: Roll back to previous release
+    needs: [deploy-production, health-check]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PRODUCTION_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Stopping the CodeDeploy deployment with rollback enabled shifts the ALB
+      # listener back to the previous (blue) task set — i.e. the previous
+      # release (Req 42.7). The deployment id is an output of the deploy job.
+      - name: Roll back CodeDeploy deployment
+        env:
+          DEPLOYMENT_ID: ${{ needs.deploy-production.outputs.codedeploy_deployment_id }}
+        run: |
+          set -euo pipefail
+          echo "Rolling back CodeDeploy deployment $DEPLOYMENT_ID to the previous release."
+          aws deploy stop-deployment --deployment-id "$DEPLOYMENT_ID" --auto-rollback-enabled

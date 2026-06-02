@@ -1,0 +1,25 @@
+{
+  "name": "@auxify/sdk",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "type-check": "tsc -b",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@auxify/types": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "5.7.3"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@auxify/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "type-check": "tsc -b",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@auxify/core": "workspace:*",
+    "@auxify/sdk": "workspace:*",
+    "@auxify/types": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "5.7.3"
+  }
+}
