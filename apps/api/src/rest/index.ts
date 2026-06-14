@@ -48,6 +48,8 @@ export {
   type ResourceGroup,
   type ResourceController,
   type RestServices,
+  type AgentRunPort,
+  type AgentRunRequest,
   type ChatStreamPort,
   type ChatStreamRequest,
   type ChatStreamSource,

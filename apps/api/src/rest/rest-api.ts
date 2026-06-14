@@ -218,6 +218,9 @@ export class RestApi {
     // Stage 3 — streaming chat over SSE when the route is (or is requested as)
     // a stream (Req 45.3).
     if (this.isStreamingRequest(route, request) && auth !== null) {
+      if (route.group === 'agents' && route.op === 'run') {
+        return this.streamAgent(params.agentId ?? '', request, auth, correlationId);
+      }
       return this.streamChat(request, auth, correlationId);
     }
 
@@ -317,6 +320,54 @@ export class RestApi {
         return;
       }
       yield* relayEngineToSse(engine, opened.source, opened.context, correlationId);
+    })();
+
+    return {
+      status: 200,
+      headers: {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+        [CORRELATION_ID_HEADER]: correlationId,
+      },
+      stream,
+    };
+  }
+
+  /** Open and relay an SSE agent run (Req 45.6). */
+  private streamAgent(
+    agentId: string,
+    request: RestRequest,
+    auth: AuthenticatedContext,
+    correlationId: string,
+  ): RestResponse | SseResponse {
+    const agentRuns = this.services.agentRuns;
+    if (agentRuns === undefined) {
+      return this.errorResponse(
+        createPlatformError({
+          category: 'not_found',
+          code: 'AGENTS_NOT_CONFIGURED',
+          message: 'agent runs are not configured on this deployment',
+          correlationId,
+        }),
+      );
+    }
+
+    const self = this;
+    const stream = (async function* (): AsyncGenerator<SseEvent> {
+      try {
+        const events = await agentRuns.open({ agentId, auth, request, correlationId });
+        yield* events;
+      } catch {
+        yield self.sseError(
+          createPlatformError({
+            category: 'internal',
+            code: 'AGENT_RUN_FAILED',
+            message: 'the agent run ended unexpectedly',
+            correlationId,
+          }),
+        );
+      }
     })();
 
     return {

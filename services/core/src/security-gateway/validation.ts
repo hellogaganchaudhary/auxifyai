@@ -110,7 +110,7 @@ export function sanitizeText(value: string): string {
   let current = value;
   // Iterate to a fixed point: removing one construct can expose another only in
   // pathological nestings; bound the loop defensively.
-  for (let pass = 0; pass < 8; pass += 1) {
+  for (let pass = 0; pass < 32; pass += 1) {
     let next = current;
     for (const pattern of DISALLOWED_PATTERNS) {
       next = next.replace(new RegExp(pattern.source, pattern.flags), '');
@@ -120,7 +120,9 @@ export function sanitizeText(value: string): string {
     }
     current = next;
   }
-  return current;
+  // Still changing after the pass cap: fail CLOSED — return an empty string
+  // rather than a possibly partially-sanitized value.
+  return '';
 }
 
 /**

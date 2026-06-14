@@ -28,6 +28,25 @@ export interface RotationOptions {
    * cursor so load spreads evenly across the free tiers.
    */
   order?: string[];
+  /**
+   * Per-provider timeout in milliseconds. A provider that does not respond
+   * within this window is treated as a failure so the rotation can move on to
+   * the next provider instead of hanging the whole request. Defaults to 9000.
+   */
+  perProviderTimeoutMs?: number;
+}
+
+/** Reject with a timeout error if `promise` does not settle within `ms`. */
+async function withProviderTimeout<T>(promise: Promise<T>, ms: number, name: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${name} timed out after ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /**
@@ -44,6 +63,7 @@ export interface RotationOptions {
 export class ProviderRotationService {
   private readonly states: ProviderState[];
   private cursor = 0;
+  private readonly perProviderTimeoutMs: number;
 
   constructor(providers?: SearchProvider[], options: RotationOptions = {}) {
     const all = providers ?? [
@@ -63,6 +83,7 @@ export class ProviderRotationService {
       cooldownUntil: 0,
       failures: 0,
     }));
+    this.perProviderTimeoutMs = options.perProviderTimeoutMs ?? 9000;
   }
 
   /** Names of providers that are configured and currently usable. */
@@ -119,10 +140,11 @@ export class ProviderRotationService {
       if (!supports(p) || !extraFilter(p)) continue;
 
       try {
-        const result =
+        const call: Promise<SearchResponse | ScrapeResponse> =
           op === 'search'
-            ? await p.search!(req as unknown as SearchRequest)
-            : await p.scrape!(req as unknown as ScrapeRequest);
+            ? p.search!(req as unknown as SearchRequest)
+            : p.scrape!(req as unknown as ScrapeRequest);
+        const result = await withProviderTimeout(call, this.perProviderTimeoutMs, p.name);
         state.failures = 0;
         return result as unknown as TRes;
       } catch (err) {

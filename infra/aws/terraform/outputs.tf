@@ -11,6 +11,22 @@ output "alb_dns_name" {
   value       = aws_lb.main.dns_name
 }
 
+output "acm_validation_records" {
+  description = "DNS records to create at your DNS provider to validate the ACM certificate (empty until `domain_name` is set)."
+  value = var.domain_name != "" && var.acm_certificate_arn == "" ? [
+    for dvo in aws_acm_certificate.api[0].domain_validation_options : {
+      name  = dvo.resource_record_name
+      type  = dvo.resource_record_type
+      value = dvo.resource_record_value
+    }
+  ] : []
+}
+
+output "https_enabled" {
+  description = "Whether the ALB is serving HTTPS (HTTP redirects when true)."
+  value       = local.https_enabled
+}
+
 output "ecr_repository_url" {
   description = "Push API container images here."
   value       = aws_ecr_repository.api.repository_url

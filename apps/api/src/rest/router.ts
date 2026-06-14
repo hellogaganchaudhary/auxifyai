@@ -206,12 +206,13 @@ function buildRoutes(services: RestServices): RouteDefinition[] {
     route('GET', '/agents', 'agents', 'list'),
     route('POST', '/agents', 'agents', 'create'),
     route('GET', '/agents/:agentId', 'agents', 'get'),
-    route('POST', '/agents/:agentId/runs', 'agents', 'run'),
+    route('POST', '/agents/:agentId/runs', 'agents', 'run', { stream: 'always' }),
 
     // --- knowledge base (Req 45.1)
     route('GET', '/knowledge-base/sources', 'knowledge-base', 'listSources'),
     route('POST', '/knowledge-base/sources', 'knowledge-base', 'connectSource'),
     route('POST', '/knowledge-base/search', 'knowledge-base', 'search'),
+    route('POST', '/knowledge-base/all', 'knowledge-base', 'fetchAll'),
 
     // --- Knowledge Hub (Req 45.1)
     route('GET', '/knowledge-hub/pages', 'knowledge-hub', 'listPages'),

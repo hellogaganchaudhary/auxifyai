@@ -428,6 +428,12 @@ export class BedrockProvider implements AIProvider {
       max_tokens: req.maxTokens ?? this.defaultMaxTokens,
       messages,
     };
+    // Enable Anthropic's 1M-token context window (beta) for models configured
+    // with a context window beyond the standard 200k. On Bedrock the beta is
+    // opted into via the `anthropic_beta` field in the request body.
+    if (model.maxTokens > 200_000) {
+      body.anthropic_beta = ['context-1m-2025-08-07'];
+    }
     if (systemParts.length > 0) {
       body.system = systemParts.join('\n\n');
     }

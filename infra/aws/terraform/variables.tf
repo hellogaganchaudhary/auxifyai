@@ -5,9 +5,9 @@ variable "region" {
 }
 
 variable "aws_profile" {
-  description = "Named AWS CLI profile used by Terraform."
+  description = "Named AWS CLI profile used by Terraform. Leave null to use the default credential chain (env vars, default profile, SSO)."
   type        = string
-  default     = "auxify"
+  default     = null
 }
 
 variable "project" {
@@ -103,13 +103,25 @@ variable "api_memory" {
   default     = 2048
 }
 
+variable "acm_certificate_arn" {
+  description = "Existing ACM certificate ARN for the ALB HTTPS listener. Leave empty to have one issued from `domain_name` instead."
+  type        = string
+  default     = ""
+}
+
+variable "domain_name" {
+  description = "Public domain for the API (e.g. api.example.com). When set (and no acm_certificate_arn given), an ACM certificate is requested with DNS validation; add the CNAME from the `acm_validation_records` output at your DNS provider to complete issuance and enable HTTPS."
+  type        = string
+  default     = ""
+}
+
 # --- Bedrock model IDs (Mumbai / ap-south-1) ---
 variable "bedrock_models" {
   description = "Map of logical model name to Bedrock model ID enabled in this account/region."
   type        = map(string)
   default = {
-    claude_opus    = "anthropic.claude-opus-4-5-20251101-v1:0"
-    claude_sonnet  = "anthropic.claude-sonnet-4-5-20250929-v1:0"
-    claude_haiku   = "anthropic.claude-haiku-4-5-20251001-v1:0"
+    claude_opus   = "anthropic.claude-opus-4-5-20251101-v1:0"
+    claude_sonnet = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+    claude_haiku  = "anthropic.claude-haiku-4-5-20251001-v1:0"
   }
 }

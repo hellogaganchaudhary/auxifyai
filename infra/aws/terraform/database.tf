@@ -93,8 +93,8 @@ resource "aws_elasticache_replication_group" "main" {
   node_type      = var.redis_node_type
   port           = 6379
 
-  num_node_groups         = 1
-  replicas_per_node_group = var.db_multi_az ? 1 : 0
+  num_node_groups            = 1
+  replicas_per_node_group    = var.db_multi_az ? 1 : 0
   automatic_failover_enabled = var.db_multi_az
   multi_az_enabled           = var.db_multi_az
 

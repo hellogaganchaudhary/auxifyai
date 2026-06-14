@@ -18,6 +18,7 @@
  *   - {@link AuthenticatedContext} — the authenticated identity produced before
  *     any handler runs (Req 45.2).
  *   - {@link RestServices} / {@link ResourceController} / {@link ChatStreamPort}
+ *     / {@link AgentRunPort}
  *     — the injectable handler ports the router dispatches to, so the router and
  *     dispatcher stay decoupled from any concrete domain implementation.
  */
@@ -312,6 +313,24 @@ export interface ChatStreamPort {
   open(req: ChatStreamRequest): Promise<ChatStreamSource>;
 }
 
+/** The coordinates and request body for an SSE agent run (Req 45.6). */
+export interface AgentRunRequest {
+  /** The agent being invoked. */
+  agentId: string;
+  /** The authenticated context that opened the run. */
+  auth: AuthenticatedContext;
+  /** The originating request. */
+  request: RestRequest;
+  /** The request's correlation id. */
+  correlationId: string;
+}
+
+/** The injectable port the streaming agent run route delegates to (Req 45.6). */
+export interface AgentRunPort {
+  /** Open an agent run and return SDK-compatible SSE events. */
+  open(req: AgentRunRequest): Promise<AsyncIterable<SseEvent>>;
+}
+
 /**
  * The bundle of injectable handler ports the router dispatches to (Req 45.1,
  * 45.3). All members are optional so a deployment (or a test) wires only the
@@ -323,4 +342,6 @@ export interface RestServices {
   controllers?: Partial<Record<ResourceGroup, ResourceController>>;
   /** The streaming chat port the SSE route delegates to (Req 45.3). */
   chatStream?: ChatStreamPort;
+  /** The streaming agent-run port the SSE route delegates to (Req 45.6). */
+  agentRuns?: AgentRunPort;
 }

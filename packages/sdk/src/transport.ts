@@ -115,12 +115,30 @@ export class FetchHttpTransport implements HttpTransport {
    * @param fetchImpl An optional `fetch` override; defaults to the global
    *   `fetch`. Supplying it keeps the transport itself injectable (e.g. for a
    *   custom-agent or a polyfill) without reaching for a global.
+   *
+   * NOTE: the browser `fetch` is a method of `window` and throws an "Illegal
+   * invocation" `TypeError` when called as a method of any other object (e.g.
+   * `this.fetchImpl(...)`). We therefore bind the global `fetch` to its global
+   * `this` so it can be safely invoked through this instance property. An
+   * explicitly injected `fetchImpl` is used as-is (callers bind their own).
    */
-  constructor(fetchImpl: typeof fetch = globalThis.fetch) {
-    if (typeof fetchImpl !== 'function') {
-      throw new Error('FetchHttpTransport requires a global fetch or an injected fetch implementation');
+  constructor(fetchImpl?: typeof fetch) {
+    if (fetchImpl !== undefined) {
+      if (typeof fetchImpl !== 'function') {
+        throw new Error(
+          'FetchHttpTransport requires a global fetch or an injected fetch implementation',
+        );
+      }
+      this.fetchImpl = fetchImpl;
+      return;
     }
-    this.fetchImpl = fetchImpl;
+    if (typeof globalThis.fetch !== 'function') {
+      throw new Error(
+        'FetchHttpTransport requires a global fetch or an injected fetch implementation',
+      );
+    }
+    // Bind to the global so the browser's `fetch` keeps its required `this`.
+    this.fetchImpl = globalThis.fetch.bind(globalThis);
   }
 
   /** Perform a buffered request and read the full response body as text. */

@@ -15,7 +15,7 @@ data "aws_iam_policy_document" "kms" {
 
   # Allow CloudWatch Logs in this region to use the key for encrypted log groups.
   statement {
-    sid     = "AllowCloudWatchLogs"
+    sid = "AllowCloudWatchLogs"
     actions = [
       "kms:Encrypt",
       "kms:Decrypt",

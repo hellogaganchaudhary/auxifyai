@@ -14,7 +14,8 @@ terraform {
 }
 
 provider "aws" {
-  region  = var.region
+  region = var.region
+  # null → default credential chain (env vars / default profile / SSO).
   profile = var.aws_profile
 
   default_tags {

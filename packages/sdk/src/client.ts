@@ -291,6 +291,9 @@ function decodeChatFrame(frame: TransportFrame): ChatEvent | null {
       if (typeof record.finishReason === 'string') {
         event.finishReason = record.finishReason as ChatFinishReason;
       }
+      if (typeof record.cost === 'number' && Number.isFinite(record.cost)) {
+        event.cost = record.cost;
+      }
       return event;
     }
     case 'error':

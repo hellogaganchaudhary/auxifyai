@@ -90,7 +90,14 @@ export interface Message {
  */
 export type ChatEvent =
   | { type: 'token'; delta: string; index?: number }
-  | { type: 'completion'; model?: string; usage?: TokenUsage; finishReason?: ChatFinishReason }
+  | {
+      type: 'completion';
+      model?: string;
+      usage?: TokenUsage;
+      finishReason?: ChatFinishReason;
+      /** Total cost of the call in the platform's accounting currency, when reported. */
+      cost?: number;
+    }
   | { type: 'error'; error: PlatformError };
 
 // ---------------------------------------------------------------------------
