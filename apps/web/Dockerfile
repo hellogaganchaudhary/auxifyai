@@ -18,5 +18,7 @@ ENV NEXT_PUBLIC_API_KEY=$NEXT_PUBLIC_API_KEY
 RUN pnpm --filter @auxify/web build
 
 ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 EXPOSE 3000
-CMD ["pnpm", "--filter", "@auxify/web", "start", "--", "-H", "0.0.0.0", "-p", "3000"]
+CMD ["pnpm", "--filter", "@auxify/web", "exec", "next", "start", "-H", "0.0.0.0", "-p", "3000"]
