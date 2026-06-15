@@ -35,6 +35,13 @@ const TITLE: Record<GenerationKind, string> = {
   file: 'Designing document',
 };
 
+/** A reassuring note about expected duration, shown under the bar. */
+const TIME_NOTE: Record<GenerationKind, string> = {
+  image: 'High-quality rendering can take 30–90 seconds. Please wait — it won’t fail.',
+  video: 'Video rendering can take a few minutes. Please keep this open.',
+  file: 'Designing a polished document can take up to a minute.',
+};
+
 /** The animated synthesis graphic shown for image/video generation. */
 function SynthCanvas() {
   // A grid of tiles that pulse on a staggered delay to read as a scene
@@ -96,6 +103,7 @@ export function GenerationProgress({ kind, label, pct, prompt }: GenerationProgr
           {label}
           {dots}
         </div>
+        <div className="ax__gen-note">{TIME_NOTE[kind]}</div>
         {prompt !== undefined && prompt.length > 0 ? (
           <p className="ax__gen-prompt">{prompt}</p>
         ) : null}

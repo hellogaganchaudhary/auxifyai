@@ -537,7 +537,9 @@ export function ChatApp() {
             messages: c.messages.map((m) => (m.id === assistantId ? { ...m, genPrompt: prompt } : m)),
           }));
           progress.setPhase('Composing the scene', 18);
-          const imgs = await generateImage(prompt, 1, '1024x1024', 'high');
+          const imgs = await generateImage(prompt, 1, '1024x1024', 'high', (attempt) => {
+            progress.setPhase(`Rendering is taking a little longer — retrying (${attempt})`);
+          });
           const urls = imgs
             .map((img) => (img.base64 ? `data:${img.mimeType};base64,${img.base64}` : img.url ?? ''))
             .filter((u) => u.length > 0);

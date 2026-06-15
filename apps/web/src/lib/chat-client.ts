@@ -82,18 +82,89 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return data;
 }
 
+/**
+ * `fetch` with an abort-based timeout so a hung request fails fast and can be
+ * retried, rather than blocking forever.
+ */
+export async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: init.signal ?? controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Retry an async operation with exponential backoff. Every throw is treated as
+ * retryable (network drop, timeout, 5xx, throttling) so long-running, flaky
+ * operations like document ingestion and image rendering eventually succeed —
+ * the priority is "no failure", even if it takes a while.
+ */
+export async function retryAsync<T>(
+  fn: (attempt: number) => Promise<T>,
+  opts: { attempts?: number; baseDelayMs?: number; maxDelayMs?: number; onRetry?: (attempt: number, err: unknown) => void } = {},
+): Promise<T> {
+  const attempts = opts.attempts ?? 6;
+  const baseDelay = opts.baseDelayMs ?? 2000;
+  const maxDelay = opts.maxDelayMs ?? 30000;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn(attempt);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < attempts) {
+        opts.onRetry?.(attempt, err);
+        const delay = Math.min(maxDelay, baseDelay * 2 ** (attempt - 1));
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 /** List the org's knowledge sources. */
 export async function listKnowledgeSources(): Promise<KnowledgeSource[]> {
   const data = await api<{ sources?: KnowledgeSource[] }>('/v1/knowledge-base/sources');
   return data.sources ?? [];
 }
 
-/** Add a text knowledge source (embedded + indexed for RAG). */
-export async function addKnowledgeSource(name: string, text: string): Promise<{ id: string; chunkCount: number }> {
-  return api<{ id: string; chunkCount: number }>('/v1/knowledge-base/sources', {
-    method: 'POST',
-    body: JSON.stringify({ name, text }),
-  });
+/**
+ * Add a text knowledge source (embedded + indexed for RAG). Hardened for
+ * background ingestion: each attempt has a generous 5-minute timeout and the
+ * call is retried with backoff, so a slow embedding pass or a transient blip
+ * never surfaces as a failure — it just takes as long as it needs.
+ */
+export async function addKnowledgeSource(
+  name: string,
+  text: string,
+  onRetry?: (attempt: number) => void,
+): Promise<{ id: string; chunkCount: number }> {
+  return retryAsync(
+    async () => {
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}/v1/knowledge-base/sources`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-api-key': API_KEY },
+          body: JSON.stringify({ name, text }),
+        },
+        300_000,
+      );
+      const data = (await response.json()) as { id: string; chunkCount: number; error?: string };
+      if (!response.ok || data.error) {
+        throw new Error(data.error ?? `request failed (${response.status})`);
+      }
+      return data;
+    },
+    { attempts: 8, baseDelayMs: 3000, onRetry: (a) => onRetry?.(a) },
+  );
 }
 
 /** Semantic-search the org knowledge base. */
@@ -733,16 +804,25 @@ export async function extractFiles(
   files: { name: string; mimeType: string; base64: string }[],
   deep = false,
 ): Promise<ExtractedFile[]> {
-  const response = await fetch(`${API_BASE_URL}/v1/files/extract`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': API_KEY },
-    body: JSON.stringify({ files, deep }),
-  });
-  if (!response.ok) {
-    throw new Error(`file extraction failed (${response.status})`);
-  }
-  const data = (await response.json()) as { files?: ExtractedFile[] };
-  return data.files ?? [];
+  return retryAsync(
+    async () => {
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}/v1/files/extract`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-api-key': API_KEY },
+          body: JSON.stringify({ files, deep }),
+        },
+        300_000,
+      );
+      if (!response.ok) {
+        throw new Error(`file extraction failed (${response.status})`);
+      }
+      const data = (await response.json()) as { files?: ExtractedFile[] };
+      return data.files ?? [];
+    },
+    { attempts: 6, baseDelayMs: 2000 },
+  );
 }
 
 /** A generated image returned by the backend. */
@@ -752,23 +832,35 @@ export interface GeneratedImage {
   url?: string;
 }
 
-/** Generate image(s) from a text prompt. */
+/** Generate image(s) from a text prompt. High-quality renders are slow, so each
+ * attempt has a generous timeout and the call is retried — it may take a while
+ * but should not fail. */
 export async function generateImage(
   prompt: string,
   count = 1,
   size = '1024x1024',
   quality = 'high',
+  onRetry?: (attempt: number) => void,
 ): Promise<GeneratedImage[]> {
-  const response = await fetch(`${API_BASE_URL}/v1/images/generate`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': API_KEY },
-    body: JSON.stringify({ prompt, count, size, quality }),
-  });
-  const data = (await response.json()) as { images?: GeneratedImage[]; error?: string };
-  if (!response.ok || data.error) {
-    throw new Error(data.error ?? `image generation failed (${response.status})`);
-  }
-  return data.images ?? [];
+  return retryAsync(
+    async () => {
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}/v1/images/generate`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-api-key': API_KEY },
+          body: JSON.stringify({ prompt, count, size, quality }),
+        },
+        300_000,
+      );
+      const data = (await response.json()) as { images?: GeneratedImage[]; error?: string };
+      if (!response.ok || data.error) {
+        throw new Error(data.error ?? `image generation failed (${response.status})`);
+      }
+      return data.images ?? [];
+    },
+    { attempts: 5, baseDelayMs: 3000, onRetry: (a) => onRetry?.(a) },
+  );
 }
 
 /**

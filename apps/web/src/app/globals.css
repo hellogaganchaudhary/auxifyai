@@ -1718,6 +1718,12 @@ pre {
   font-size: 0.9rem;
   color: var(--text-2, var(--text-3));
 }
+.ax__gen-note {
+  margin-top: var(--s1);
+  font-size: 0.78rem;
+  color: var(--text-3);
+  font-style: italic;
+}
 .ax__gen-prompt {
   margin: var(--s2) 0 0;
   font-size: 0.82rem;

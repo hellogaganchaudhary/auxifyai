@@ -123,60 +123,35 @@ export function KnowledgePanel({ onClose, visionModelId }: KnowledgePanelProps) 
         for (const img of images) failures.push(img.name);
       }
 
-      // --- Documents: deep server-side extraction, batched under the body cap. ---
+      // --- Documents: deep extraction + indexing, ONE file per request. ---
+      // One file per request keeps each call small and well within limits, and
+      // both extractFiles + addKnowledgeSource retry internally — so indexing
+      // never fails on a slow/large file, it just takes the time it needs.
       if (docs.length > 0) {
-        setUploadStatus(`Extracting & indexing ${docs.length} document(s)…`);
-
-        // The API caps request bodies (32 MB); base64 inflates size ~33%, so
-        // many files can't go in one request. Batch by cumulative encoded size
-        // (and a file count cap) and process each batch sequentially.
-        const MAX_BATCH_BYTES = 16 * 1024 * 1024; // stay well under the 32 MB cap
-        const MAX_BATCH_FILES = 15;
-        const batches: (typeof docs)[] = [];
-        let current: typeof docs = [];
-        let currentBytes = 0;
         for (const doc of docs) {
-          const size = doc.base64.length;
-          if (
-            current.length > 0 &&
-            (currentBytes + size > MAX_BATCH_BYTES || current.length >= MAX_BATCH_FILES)
-          ) {
-            batches.push(current);
-            current = [];
-            currentBytes = 0;
-          }
-          current.push(doc);
-          currentBytes += size;
-        }
-        if (current.length > 0) batches.push(current);
-
-        for (const batch of batches) {
-          let extracted: { name: string; text: string; failed?: boolean }[];
+          processed += 1;
+          setUploadStatus(
+            `Indexing ${doc.name} (${processed}/${total})… large files can take a while — please keep this open.`,
+          );
           try {
-            // `deep` = full multi-sheet / long-document extraction for the KB.
-            extracted = await extractFiles(
-              batch.map((d) => ({ name: d.name, mimeType: d.mimeType, base64: d.base64 })),
+            const extracted = await extractFiles(
+              [{ name: doc.name, mimeType: doc.mimeType, base64: doc.base64 }],
               true,
             );
-          } catch {
-            for (const d of batch) failures.push(d.name);
-            processed += batch.length;
-            setUploadStatus(`Indexed ${indexed}/${total}… (${processed} processed)`);
-            continue;
-          }
-          for (const file of extracted) {
-            processed += 1;
-            if (file.failed || file.text.trim().length === 0) {
-              failures.push(file.name);
+            const file = extracted[0];
+            if (file === undefined || file.failed || file.text.trim().length === 0) {
+              failures.push(doc.name);
             } else {
-              try {
-                await addKnowledgeSource(file.name, file.text);
-                indexed += 1;
-              } catch {
-                failures.push(file.name);
-              }
+              await addKnowledgeSource(file.name, file.text, (attempt) => {
+                setUploadStatus(
+                  `Still indexing ${doc.name} (${processed}/${total})… retry ${attempt}, this is normal for large documents.`,
+                );
+              });
+              indexed += 1;
             }
-            setUploadStatus(`Indexing ${indexed}/${total}… (${processed} processed)`);
+          } catch {
+            // Exhausted all retries — record and keep going with the rest.
+            failures.push(doc.name);
           }
           setSources(await listKnowledgeSources());
         }
