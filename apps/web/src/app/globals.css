@@ -1429,6 +1429,11 @@ pre {
   color: var(--text-3);
   padding: var(--s1) var(--s3);
 }
+.ax__menu-hint {
+  color: var(--text-3);
+  font-weight: 400;
+  font-size: 11.5px;
+}
 
 /* ---- Responsive ---- */
 @media (max-width: 768px) {
@@ -2773,4 +2778,57 @@ pre {
   color: var(--danger);
   border-radius: var(--r-md);
   font-size: 13px;
+}
+
+/* ---- Admin console ---- */
+.ax__admin-tabs {
+  display: flex;
+  gap: var(--s2);
+  margin-bottom: var(--s3);
+}
+.ax__admin-tab {
+  padding: var(--s2) var(--s4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  color: var(--text-2, var(--text-3));
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ax__admin-tab--on {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  border-color: var(--accent);
+}
+.ax__kb-item--btn {
+  cursor: pointer;
+}
+.ax__kb-item--btn:hover {
+  background: var(--hover);
+}
+.ax__admin-convo {
+  max-height: 50vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s2);
+}
+.ax__admin-msg {
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.ax__admin-msg--user {
+  background: var(--hover);
+}
+.ax__admin-msg-role {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: var(--s1);
 }

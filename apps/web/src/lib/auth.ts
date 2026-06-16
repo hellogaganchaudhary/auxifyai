@@ -1,24 +1,28 @@
 /**
- * Client-side authentication for the single shared application login.
+ * Client-side authentication for the multi-user platform.
  *
- * Credentials are validated SERVER-SIDE (`POST /v1/auth/login`) so the password
- * never lives in the browser bundle. On success the server returns an opaque
- * session token, which we persist in `localStorage` to keep the user signed in
- * across reloads. This gates the UI; the API itself is additionally protected
- * by its own key.
+ * Credentials are validated SERVER-SIDE (`POST /v1/auth/login`); on success the
+ * server returns a signed session token plus the user (email + role). The token
+ * is sent as a Bearer header on per-user API calls (conversations, admin) and
+ * persisted so the session survives reloads.
  */
 
 import { API_BASE_URL } from './config';
 
-/** localStorage key under which the session token is stored. */
 const TOKEN_KEY = 'auxify.session.token';
-/** localStorage key under which the signed-in email is stored (for display). */
-const EMAIL_KEY = 'auxify.session.email';
+const USER_KEY = 'auxify.session.user';
 
-/** The result of a successful login. */
+/** The signed-in user. */
+export interface SessionUser {
+  id?: string;
+  email: string;
+  role: 'superadmin' | 'user';
+}
+
+/** A persisted session. */
 export interface Session {
   token: string;
-  email: string;
+  user: SessionUser;
 }
 
 /** Validate credentials against the API and persist the session on success. */
@@ -28,16 +32,17 @@ export async function login(email: string, password: string): Promise<Session> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
-  const data = (await response.json()) as { token?: string; email?: string; error?: string };
+  const data = (await response.json()) as { token?: string; user?: SessionUser; email?: string; error?: string };
   if (!response.ok || data.token === undefined) {
     throw new Error(data.error ?? `login failed (${response.status})`);
   }
-  const session: Session = { token: data.token, email: data.email ?? email };
+  const user: SessionUser = data.user ?? { email, role: 'user' };
+  const session: Session = { token: data.token, user };
   try {
     window.localStorage.setItem(TOKEN_KEY, session.token);
-    window.localStorage.setItem(EMAIL_KEY, session.email);
+    window.localStorage.setItem(USER_KEY, JSON.stringify(session.user));
   } catch {
-    /* storage unavailable (private mode) — session lives for this tab only */
+    /* storage unavailable — session lives for this tab only */
   }
   return session;
 }
@@ -46,8 +51,10 @@ export async function login(email: string, password: string): Promise<Session> {
 export function getSession(): Session | null {
   try {
     const token = window.localStorage.getItem(TOKEN_KEY);
-    const email = window.localStorage.getItem(EMAIL_KEY) ?? '';
-    return token !== null && token.length > 0 ? { token, email } : null;
+    if (token === null || token.length === 0) return null;
+    const rawUser = window.localStorage.getItem(USER_KEY);
+    const user = rawUser !== null ? (JSON.parse(rawUser) as SessionUser) : { email: '', role: 'user' as const };
+    return { token, user };
   } catch {
     return null;
   }
@@ -58,11 +65,22 @@ export function isAuthenticated(): boolean {
   return getSession() !== null;
 }
 
+/** The current user's role, or null. */
+export function currentRole(): 'superadmin' | 'user' | null {
+  return getSession()?.user.role ?? null;
+}
+
+/** Authorization header for per-user API calls (empty when signed out). */
+export function authHeader(): Record<string, string> {
+  const session = getSession();
+  return session !== null ? { authorization: `Bearer ${session.token}` } : {};
+}
+
 /** Clear the persisted session (sign out). */
 export function logout(): void {
   try {
     window.localStorage.removeItem(TOKEN_KEY);
-    window.localStorage.removeItem(EMAIL_KEY);
+    window.localStorage.removeItem(USER_KEY);
   } catch {
     /* ignore */
   }

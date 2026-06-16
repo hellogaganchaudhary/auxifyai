@@ -68,7 +68,14 @@ import {
   type ModelUsage,
 } from '@/lib/usage';
 import { useTheme } from '@/components/shell/ThemeProvider';
-import { logout } from '@/lib/auth';
+import { logout, currentRole } from '@/lib/auth';
+import {
+  listServerConversations,
+  getServerConversation,
+  saveServerConversation,
+  deleteServerConversation,
+} from '@/lib/server-store';
+import { AdminPanel } from '@/components/AdminPanel';
 import { Markdown } from '@/components/Markdown';
 import { BrandMark } from '@/components/brand/Logo';
 import { downloadText } from '@/components/CodeBlock';
@@ -132,6 +139,24 @@ const LENGTH_PRESETS: Record<
       'Produce an exhaustive, comprehensive long-form response — the equivalent of many pages. Organize it as a complete document with a title, introduction, multiple detailed sections with descriptive headings, examples, and a conclusion. Never truncate or summarize prematurely. If the user asks for a specific number of pages or items, meet or exceed it.',
   },
 };
+
+/**
+ * Deep-research output-length presets. These let the user dial how long the
+ * report is — including taming the "very deep" (exhaustive) mode, which would
+ * otherwise default to a ~100k-token report. `maxTokens` is the OUTPUT budget
+ * sent to the orchestrator; it batches sections until the budget is reached.
+ */
+const RESEARCH_LENGTH_PRESETS: Record<
+  'brief' | 'standard' | 'long' | 'exhaustive',
+  { label: string; hint: string; maxTokens: number }
+> = {
+  brief: { label: 'Brief', hint: '~8k tokens · a few pages', maxTokens: 8_000 },
+  standard: { label: 'Standard', hint: '~16k tokens · ~10 pages', maxTokens: 16_000 },
+  long: { label: 'Long', hint: '~40k tokens · in-depth', maxTokens: 40_000 },
+  exhaustive: { label: 'Exhaustive', hint: '~100k tokens · book-length', maxTokens: 100_000 },
+};
+
+type ResearchLength = keyof typeof RESEARCH_LENGTH_PRESETS;
 
 const FILE_FORMATS: Array<{ format: GeneratedFileFormat; label: string }> = [
   { format: 'pptx', label: 'PowerPoint (.pptx)' },
@@ -242,6 +267,7 @@ export function ChatApp() {
   const [docDesigned, setDocDesigned] = useState(true);
   const [docTheme, setDocTheme] = useState<DocThemeId>('auto');
   const [researchDepth, setResearchDepth] = useState<'standard' | 'exhaustive'>('standard');
+  const [researchLength, setResearchLength] = useState<ResearchLength>('standard');
   const [useWebSearch, setUseWebSearch] = useState(false);
   const [useKnowledge, setUseKnowledge] = useState(false);
   const [outputLength, setOutputLength] = useState<'auto' | 'long' | 'max'>('auto');
@@ -261,6 +287,8 @@ export function ChatApp() {
   const [usageMap, setUsageMap] = useState<Record<string, ModelUsage>>({});
   const [usageOpen, setUsageOpen] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const isSuperAdmin = currentRole() === 'superadmin';
   const [voiceStatus, setVoiceStatus] = useState<string>('');
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
@@ -288,15 +316,30 @@ export function ChatApp() {
   );
   const activeModel = chatModels.find((m) => m.id === active?.modelId);
 
-  // Load conversations + live model catalog on mount.
+  // Load conversations (server-backed, falling back to local cache) + catalog.
   useEffect(() => {
-    const stored = loadConversations();
-    setConversations(stored);
-    setUsageMap(loadUsage());
-    if (stored.length > 0) {
-      setActiveId(stored[0]!.id);
-    }
     let on = true;
+    setUsageMap(loadUsage());
+    // 1) Seed instantly from the local cache so the UI isn't blank.
+    const cached = loadConversations();
+    if (cached.length > 0) {
+      setConversations(cached);
+      setActiveId(cached[0]!.id);
+    }
+    // 2) Then hydrate the authoritative history from the server.
+    void (async () => {
+      try {
+        const summaries = await listServerConversations();
+        const full = await Promise.all(summaries.map((s) => getServerConversation(s.id).catch(() => null)));
+        const convos = full.filter((c): c is Conversation => c !== null);
+        if (on && convos.length > 0) {
+          setConversations(convos);
+          setActiveId((prev) => (convos.some((c) => c.id === prev) ? prev : convos[0]!.id));
+        }
+      } catch {
+        /* server unavailable — keep the local cache */
+      }
+    })();
     void getCapabilities().then((c) => {
       if (on) setCaps(c);
     });
@@ -325,6 +368,20 @@ export function ChatApp() {
       saveConversations(conversations);
     }
   }, [conversations]);
+
+  // Persist the active conversation to the server (debounced) so every message,
+  // response, and media is stored and never vanishes.
+  useEffect(() => {
+    if (activeId === '' || streaming) return;
+    const active = conversations.find((c) => c.id === activeId);
+    if (active === undefined || active.messages.length === 0) return;
+    const timer = setTimeout(() => {
+      void saveServerConversation(active).catch(() => {
+        /* retried internally; ignore */
+      });
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [conversations, activeId, streaming]);
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
@@ -370,6 +427,7 @@ export function ChatApp() {
   }
 
   function handleDelete(id: string) {
+    void deleteServerConversation(id);
     setConversations((prev) => {
       const next = prev.filter((c) => c.id !== id);
       saveConversations(next);
@@ -384,6 +442,7 @@ export function ChatApp() {
     if (conversations.length === 0) return;
     const ok = window.confirm('Clear all conversations? This cannot be undone.');
     if (!ok) return;
+    for (const c of conversations) void deleteServerConversation(c.id);
     setConversations([]);
     saveConversations([]);
     setActiveId('');
@@ -845,7 +904,7 @@ export function ChatApp() {
         pushResearch();
 
         try {
-          const researchLengthPreset = LENGTH_PRESETS[outputLength];
+          const researchLengthPreset = RESEARCH_LENGTH_PRESETS[researchLength];
 
           // When the knowledge base is enabled, fold the ENTIRE indexed
           // knowledge base into the research as authoritative source material.
@@ -1472,6 +1531,12 @@ export function ChatApp() {
             <span className="ax__foot-ic" aria-hidden="true">⎋</span>
             Sign out
           </button>
+          {isSuperAdmin ? (
+            <button type="button" className="ax__foot-row" onClick={() => setAdminOpen(true)}>
+              <span className="ax__foot-ic" aria-hidden="true">🛡️</span>
+              Admin · users &amp; monitoring
+            </button>
+          ) : null}
           <div className="ax__foot-row ax__foot-row--static">
             <span className="ax__foot-ic" aria-hidden="true">↗</span>
             Updates &amp; FAQ
@@ -1896,6 +1961,28 @@ export function ChatApp() {
                         </button>
                       ) : null}
                       <div className="ax__menu-sep" />
+                      {mode === 'research' ? (
+                        <>
+                          <div className="ax__menu-label">Research length</div>
+                          {(['brief', 'standard', 'long', 'exhaustive'] as const).map((len) => (
+                            <button
+                              key={len}
+                              type="button"
+                              className={`ax__menu-item ${researchLength === len ? 'ax__menu-item--on' : ''}`}
+                              onClick={() => {
+                                setResearchLength(len);
+                                setToolsMenuOpen(false);
+                              }}
+                            >
+                              <span>
+                                {RESEARCH_LENGTH_PRESETS[len].label}
+                                <span className="ax__menu-hint"> · {RESEARCH_LENGTH_PRESETS[len].hint}</span>
+                              </span>
+                            </button>
+                          ))}
+                          <div className="ax__menu-sep" />
+                        </>
+                      ) : null}
                       <div className="ax__menu-label">Response length</div>
                       {(['auto', 'long', 'max'] as const).map((len) => (
                         <button
@@ -2140,6 +2227,8 @@ export function ChatApp() {
       {docPreview !== null ? (
         <DocumentPreview target={docPreview} onClose={() => setDocPreview(null)} />
       ) : null}
+
+      {adminOpen ? <AdminPanel onClose={() => setAdminOpen(false)} /> : null}
 
       {knowledgeOpen ? (
         <KnowledgePanel
