@@ -15,6 +15,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import type { RestApi, RestRequest, HttpMethod } from '../rest/index';
 import { createRealtimeProxy } from './realtime-proxy';
 import type { AzureRealtimeConfig } from './env';
+import type { AccountsService } from './accounts';
 
 /** The local path the browser opens its realtime WebSocket to. */
 export const REALTIME_WS_PATH = '/v1/realtime/ws';
@@ -39,6 +40,8 @@ export interface HttpServerOptions {
   devToken: string;
   /** The single shared application login (server-side validated). */
   appAuth: { email: string; password: string; secret: string };
+  /** User accounts + chat persistence service (null when no database). */
+  accounts: AccountsService | null;
   /** Generate images (bound from the composition). */
   generateImage: (prompt: string, count?: number, size?: string, quality?: string) => Promise<
     { mimeType: string; base64?: string; url?: string }[]
@@ -239,7 +242,7 @@ export function startHttpServer(options: HttpServerOptions): Server {
   const { restApi, port, host, corsOrigin, devApiKey, devToken, generateImage, extractFiles } =
     options;
   const { createVideo, getVideo, getVideoContent, createRealtimeSession } = options;
-  const { appAuth } = options;
+  const { appAuth, accounts } = options;
   const { generateFile, deepResearch } = options;
   const { generateDocument, renderDocument } = options;
   const { capabilities } = options;
@@ -382,8 +385,10 @@ export function startHttpServer(options: HttpServerOptions): Server {
       return;
     }
 
-    // --- Single shared application login (public; password validated here so
-    // it is never shipped to the browser). Returns an opaque session token. ---
+    // --- Auth + user accounts + server-side chat persistence -----------------
+    // Per-user login: validates against the accounts store (super-admin seeded
+    // from APP_AUTH_*). Falls back to the single shared credential when no
+    // database/accounts service is configured.
     if (url.pathname === '/v1/auth/login') {
       if ((req.method ?? 'GET').toUpperCase() !== 'POST') {
         sendJson(res, 405, { error: 'method not allowed' });
@@ -392,21 +397,143 @@ export function startHttpServer(options: HttpServerOptions): Server {
       const body = (await readBody(req, maxBodyBytes)) as Record<string, unknown> | undefined;
       const email = (typeof body?.email === 'string' ? body.email : '').trim().toLowerCase();
       const password = typeof body?.password === 'string' ? body.password : '';
+      if (accounts !== null) {
+        try {
+          const result = await accounts.login(email, password);
+          if (result === null) {
+            sendJson(res, 401, { error: 'invalid email or password' });
+            return;
+          }
+          sendJson(res, 200, { token: result.token, user: result.user });
+        } catch (error) {
+          sendJson(res, 500, { error: publicMessage(error, 'login failed', url.pathname) });
+        }
+        return;
+      }
+      // Fallback: single shared credential (no database).
       if (appAuth.password.length === 0) {
         sendJson(res, 503, { error: 'login is not configured (set APP_AUTH_PASSWORD)' });
         return;
       }
-      // Constant-time check of both fields before granting a token.
-      const okEmail = safeEqual(email, appAuth.email);
-      const okPassword = safeEqual(password, appAuth.password);
-      if (!okEmail || !okPassword) {
+      if (!safeEqual(email, appAuth.email) || !safeEqual(password, appAuth.password)) {
         sendJson(res, 401, { error: 'invalid email or password' });
         return;
       }
       sendJson(res, 200, {
         token: mintSessionToken(appAuth.email, appAuth.secret),
-        email: appAuth.email,
+        user: { email: appAuth.email, role: 'superadmin' },
       });
+      return;
+    }
+
+    // All routes below require a valid session token (Bearer) resolved here.
+    if (
+      url.pathname === '/v1/auth/me' ||
+      url.pathname.startsWith('/v1/admin/') ||
+      url.pathname === '/v1/conversations' ||
+      url.pathname.startsWith('/v1/conversations/')
+    ) {
+      const headers = normalizeHeaders(req);
+      const method = (req.method ?? 'GET').toUpperCase();
+      if (accounts === null) {
+        sendJson(res, 503, { error: 'accounts are not configured (no database)' });
+        return;
+      }
+      const bearer = (headers['authorization'] ?? '').replace(/^[Bb]earer\s+/, '').trim();
+      const session = accounts.verifyToken(bearer);
+      if (session === null) {
+        sendJson(res, 401, { error: 'authentication required' });
+        return;
+      }
+      try {
+        // Current user.
+        if (url.pathname === '/v1/auth/me') {
+          sendJson(res, 200, { user: { id: session.userId, email: session.email, role: session.role } });
+          return;
+        }
+
+        // --- Admin (super-admin only) ---
+        if (url.pathname.startsWith('/v1/admin/')) {
+          if (session.role !== 'superadmin') {
+            sendJson(res, 403, { error: 'super-admin access required' });
+            return;
+          }
+          if (url.pathname === '/v1/admin/users' && method === 'GET') {
+            sendJson(res, 200, { users: await accounts.listUsers() });
+            return;
+          }
+          if (url.pathname === '/v1/admin/users' && method === 'POST') {
+            const body = (await readBody(req, maxBodyBytes)) as Record<string, unknown> | undefined;
+            const email = typeof body?.email === 'string' ? body.email : '';
+            const password = typeof body?.password === 'string' ? body.password : '';
+            const role = body?.role === 'superadmin' ? 'superadmin' : 'user';
+            try {
+              const user = await accounts.createUser(email, password, role, session.userId);
+              sendJson(res, 201, { user });
+            } catch (e) {
+              sendJson(res, 400, { error: e instanceof Error ? e.message : 'could not create user' });
+            }
+            return;
+          }
+          if (url.pathname === '/v1/admin/conversations' && method === 'GET') {
+            sendJson(res, 200, { conversations: await accounts.adminListConversations() });
+            return;
+          }
+          // GET /v1/admin/conversations/:id — read any user's conversation.
+          const adminConvo = url.pathname.match(/^\/v1\/admin\/conversations\/([^/]+)$/);
+          if (adminConvo && method === 'GET') {
+            const payload = await accounts.getConversation(session.userId, true, decodeURIComponent(adminConvo[1] ?? ''));
+            if (payload === null) {
+              sendJson(res, 404, { error: 'conversation not found' });
+              return;
+            }
+            sendJson(res, 200, { conversation: payload });
+            return;
+          }
+          sendJson(res, 404, { error: 'not found' });
+          return;
+        }
+
+        // --- Conversations (own, per user) ---
+        if (url.pathname === '/v1/conversations' && method === 'GET') {
+          sendJson(res, 200, { conversations: await accounts.listConversations(session.userId) });
+          return;
+        }
+        if (url.pathname === '/v1/conversations' && method === 'POST') {
+          const body = (await readBody(req, maxBodyBytes)) as Record<string, unknown> | undefined;
+          const conversation = (typeof body?.conversation === 'object' && body.conversation !== null
+            ? body.conversation
+            : body) as { id?: string; title?: string } & Record<string, unknown>;
+          if (typeof conversation.id !== 'string') {
+            sendJson(res, 400, { error: 'conversation.id is required' });
+            return;
+          }
+          await accounts.saveConversation(session.userId, conversation as { id: string });
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+        const convoMatch = url.pathname.match(/^\/v1\/conversations\/([^/]+)$/);
+        if (convoMatch) {
+          const id = decodeURIComponent(convoMatch[1] ?? '');
+          if (method === 'GET') {
+            const payload = await accounts.getConversation(session.userId, false, id);
+            if (payload === null) {
+              sendJson(res, 404, { error: 'conversation not found' });
+              return;
+            }
+            sendJson(res, 200, { conversation: payload });
+            return;
+          }
+          if (method === 'DELETE') {
+            await accounts.deleteConversation(session.userId, id);
+            sendJson(res, 200, { ok: true });
+            return;
+          }
+        }
+        sendJson(res, 404, { error: 'not found' });
+      } catch (error) {
+        sendJson(res, 500, { error: publicMessage(error, 'request failed', url.pathname) });
+      }
       return;
     }
 

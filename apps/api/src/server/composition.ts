@@ -90,6 +90,7 @@ import { HttpAzureClient } from './azure-client';
 import { HttpFoundryClient } from './foundry-client';
 import type { ServerConfig } from './env';
 import type { Database } from './database';
+import { buildAccountsService, type AccountsService } from './accounts';
 
 /** A model paired with the provider adapter that serves it. */
 interface ResolvedProviders {
@@ -136,6 +137,8 @@ export interface Composition {
   realtimeEnabled: boolean;
   /** Whether the knowledge / RAG layer (DB + pgvector + embeddings) is live. */
   knowledgeEnabled: boolean;
+  /** User accounts + server-side chat persistence (null when no database). */
+  accounts: AccountsService | null;
   /**
    * Generate image(s) from a prompt, or throw when image gen is not configured.
    * Bound to the http-server's `/v1/images/generate` route.
@@ -281,6 +284,10 @@ const BUILTIN_AGENTS: AgentDefinition[] = [
   },
 ];
 
+/** Feature flag: when false, all Azure AI Foundry models (`azure` + `foundry`)
+ * are excluded from the catalog and only AWS Bedrock models are exposed. */
+const AZURE_FOUNDRY_ENABLED = false;
+
 /** A compact spec for an Azure deployment we register from the env file. */
 interface AzureModelSpec {
   /** Platform-stable id (and the picker label source). */
@@ -388,15 +395,19 @@ function buildRegistry(config: ServerConfig): ConfigModelRegistry {
   // Only register Bedrock models when a Bedrock credential is configured.
   const bedrock = config.bedrock !== null ? bedrockModels() : [];
 
-  // Use the operator's REAL Azure deployments (gpt-5.5, gpt-5.4, …) when Azure
-  // is configured; otherwise fall back to the default Azure catalog so the
-  // picker still lists models (marked unavailable).
-  const azure = config.azure !== null
-    ? envModels('azure', AZURE_MODEL_SPECS)
-    : defaultRegistryConfig.models.filter((m) => m.provider === 'azure');
-  const foundry = config.foundry !== null
-    ? envModels('foundry', FOUNDRY_MODEL_SPECS)
+  // Azure AI Foundry is intentionally disabled: the catalog exposes only the
+  // available AWS Bedrock (Claude) models. Flip AZURE_FOUNDRY_ENABLED to `true`
+  // to restore the `azure` GPT/o-series deployments and the `foundry`
+  // partner/MaaS deployments.
+  const azure = AZURE_FOUNDRY_ENABLED
+    ? config.azure !== null
+      ? envModels('azure', AZURE_MODEL_SPECS)
+      : defaultRegistryConfig.models.filter((m) => m.provider === 'azure')
     : [];
+  const foundry =
+    AZURE_FOUNDRY_ENABLED && config.foundry !== null
+      ? envModels('foundry', FOUNDRY_MODEL_SPECS)
+      : [];
 
   registry.load({
     providers: [
@@ -1100,6 +1111,10 @@ export function buildComposition(config: ServerConfig, database: Database | null
       : null;
   const knowledgeEnabled = vectors !== null && embed !== null;
 
+  // User accounts + server-side chat persistence (requires a database).
+  const accounts: AccountsService | null =
+    database !== null ? buildAccountsService(database.sql, config.appAuth.secret) : null;
+
   const services: RestServices = {
     controllers: {
       ...buildControllers(registry, providers, search, database, agents),
@@ -1131,6 +1146,7 @@ export function buildComposition(config: ServerConfig, database: Database | null
     videoEnabled: config.azureVideo !== null,
     realtimeEnabled: config.azureRealtime !== null,
     knowledgeEnabled,
+    accounts,
     generateImage: async (prompt, count, size, quality) => {
       if (config.azureImage === null) {
         throw new Error(

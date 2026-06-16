@@ -23,6 +23,18 @@ async function main(): Promise<void> {
   const database = await initDatabase();
   const composition = buildComposition(config, database);
 
+  // Provision the accounts schema and seed the super-admin (idempotent).
+  if (composition.accounts !== null) {
+    try {
+      await composition.accounts.ensureSchema();
+      await composition.accounts.bootstrapSuperadmin(config.appAuth.email, config.appAuth.password);
+    } catch (error) {
+      process.stderr.write(
+        `[accounts] setup failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  }
+
   startHttpServer({
     restApi: composition.restApi,
     port: config.port,
@@ -33,6 +45,7 @@ async function main(): Promise<void> {
     devApiKey: config.devApiKey,
     devToken: config.devToken,
     appAuth: config.appAuth,
+    accounts: composition.accounts,
     generateImage: composition.generateImage,
     extractFiles: composition.extractFiles,
     createVideo: composition.createVideo,
