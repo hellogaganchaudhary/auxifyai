@@ -74,6 +74,7 @@ import {
   getServerConversation,
   saveServerConversation,
   deleteServerConversation,
+  getMe,
 } from '@/lib/server-store';
 import { AdminPanel } from '@/components/AdminPanel';
 import { Markdown } from '@/components/Markdown';
@@ -171,6 +172,39 @@ const FILE_FORMATS: Array<{ format: GeneratedFileFormat; label: string }> = [
 
 function fileLabel(format: GeneratedFileFormat): string {
   return FILE_FORMATS.find((f) => f.format === format)?.label ?? format;
+}
+
+/**
+ * White-label model names: never expose the underlying foundation model or
+ * provider (Bedrock / Claude / GPT / Grok …) in the UI — show Auxify-branded
+ * tier names instead. Falls back to a generic Auxify label for unknown ids.
+ */
+const MODEL_BRAND: Record<string, string> = {
+  'claude-opus-4-6': 'Auxify Max',
+  'claude-opus-4-5': 'Auxify Max (2.5)',
+  'claude-sonnet-4-5': 'Auxify Pro',
+  'claude-haiku-4-5': 'Auxify Lite',
+  'gpt-5.5': 'Auxify Reason X',
+  'gpt-5.4': 'Auxify Reason',
+  'gpt-5-pro': 'Auxify Reason Pro',
+  'gpt-5': 'Auxify Reason 5',
+  o3: 'Auxify Logic',
+  'o4-mini': 'Auxify Logic Mini',
+  'gpt-4o': 'Auxify Chat',
+  'gpt-4o-mini': 'Auxify Chat Mini',
+  'grok-4.3': 'Auxify Spark',
+  'grok-4-20-reasoning': 'Auxify Spark Reason',
+  'deepseek-v3.1': 'Auxify Core',
+  'deepseek-r1-0528': 'Auxify Core Reason',
+  'kimi-k2.6': 'Auxify Nova',
+  'auxify-echo': 'Auxify Echo',
+  'text-embedding-3-large': 'Auxify Embeddings',
+};
+
+/** The Auxify-branded label for a model id (hides the real model/provider). */
+function brandModel(id: string | undefined, fallback?: string): string {
+  if (id === undefined) return fallback ?? 'Auxify';
+  return MODEL_BRAND[id] ?? fallback ?? 'Auxify';
 }
 
 /**
@@ -288,7 +322,9 @@ export function ChatApp() {
   const [usageOpen, setUsageOpen] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
-  const isSuperAdmin = currentRole() === 'superadmin';
+  // Authoritative role from the server (falls back to the cached session).
+  const [role, setRole] = useState<'superadmin' | 'user' | null>(currentRole());
+  const isSuperAdmin = role === 'superadmin';
   const [voiceStatus, setVoiceStatus] = useState<string>('');
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
@@ -320,6 +356,10 @@ export function ChatApp() {
   useEffect(() => {
     let on = true;
     setUsageMap(loadUsage());
+    // Resolve the authoritative role from the server (handles stale sessions).
+    void getMe().then((me) => {
+      if (on && me !== null) setRole(me.role);
+    });
     // 1) Seed instantly from the local cache so the UI isn't blank.
     const cached = loadConversations();
     if (cached.length > 0) {
@@ -728,7 +768,7 @@ export function ChatApp() {
               setUsageMap(
                 recordUsage({
                   modelId,
-                  displayName: info?.displayName ?? modelId,
+                  displayName: brandModel(modelId),
                   inputTokens: inTok,
                   outputTokens: outTok,
                   cost: finalCost,
@@ -859,7 +899,7 @@ export function ChatApp() {
           setUsageMap(
             recordUsage({
               modelId,
-              displayName: fileInfo?.displayName ?? modelId,
+              displayName: brandModel(modelId),
               inputTokens: fileInTok,
               outputTokens: fileOutTok,
               cost: fileFinalCost,
@@ -1033,7 +1073,7 @@ export function ChatApp() {
             setUsageMap(
               recordUsage({
                 modelId,
-                displayName: resInfo?.displayName ?? modelId,
+                displayName: brandModel(modelId),
                 inputTokens: resInTok,
                 outputTokens: resOutTok,
                 cost: resFinalCost,
@@ -1171,7 +1211,7 @@ export function ChatApp() {
         setUsageMap(
           recordUsage({
             modelId: resolvedModelId,
-            displayName: info?.displayName ?? resolvedModelId,
+            displayName: brandModel(resolvedModelId),
             inputTokens: inTok,
             outputTokens: outTok,
             cost: finalCost,
@@ -1630,7 +1670,7 @@ export function ChatApp() {
                           <span className="ax__msg-who">Auxify</span>
                           {m.model && m.kind !== 'image' && m.kind !== 'video' ? (
                             <span className="ax__msg-model">
-                              {models.find((mm) => mm.id === m.model)?.displayName ?? m.model}
+                              {brandModel(m.model, m.model ?? '')}
                             </span>
                           ) : null}
                         </div>
@@ -2163,7 +2203,7 @@ export function ChatApp() {
                       setToolsMenuOpen(false);
                     }}
                   >
-                    {activeModel?.displayName ?? 'Select model'}
+                    {brandModel(activeModel?.id, 'Select model')}
                     <span aria-hidden="true">▾</span>
                   </button>
                   {modelMenuOpen ? (
@@ -2179,9 +2219,9 @@ export function ChatApp() {
                             setModelMenuOpen(false);
                           }}
                         >
-                          <span>{m.displayName}</span>
+                          <span>{brandModel(m.id, m.displayName)}</span>
                           <span className="ax__menu-meta">
-                            {m.provider}
+                            {m.tier}
                             {m.available ? '' : ' · locked'}
                           </span>
                         </button>

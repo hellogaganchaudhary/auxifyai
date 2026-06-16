@@ -39,6 +39,18 @@ function headers(): Record<string, string> {
   return { 'content-type': 'application/json', ...authHeader() };
 }
 
+/** The current signed-in user, resolved authoritatively from the server. */
+export async function getMe(): Promise<{ id: string; email: string; role: 'superadmin' | 'user' } | null> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/v1/auth/me`, { headers: headers() });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { user?: { id: string; email: string; role: 'superadmin' | 'user' } };
+    return data.user ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** List the signed-in user's conversation summaries. */
 export async function listServerConversations(): Promise<ConversationSummary[]> {
   const res = await fetch(`${API_BASE_URL}/v1/conversations`, { headers: headers() });
